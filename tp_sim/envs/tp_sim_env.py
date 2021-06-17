@@ -1,6 +1,6 @@
 import gym
 from collections import OrderedDict
-from gym.spaces import Discrete, Box, Dict, Tuple, MultiBinary, MultiDiscrete
+from gym.spaces import Discrete, Box, Dict, MultiBinary
 import pandas as pd
 import numpy as np
 import random
@@ -16,8 +16,9 @@ def tuple_to_number(D, permit):
     return permit[1]*D + permit[0]
 
 # Do transactions
-# IMPLEMENT DRAW
 def do_transactions(N, D, book, action_book, in_poss, owners, credits):
+    last_trans = [0 for i in range(D**2)]
+    
     for i in range(len(book)):
         # Bids
         if not np.isnan(book.seller[i]):
@@ -35,7 +36,11 @@ def do_transactions(N, D, book, action_book, in_poss, owners, credits):
             # Only for bids bigger than minimum price
             if best_bid >= book.price[i]:
                 # Find who did best bid
-                player_best_bid = np.argmax(bids)
+                
+                players_best_bid = np.argwhere((bids == best_bid).tolist()).flatten().tolist()
+
+                # Choince someone randomly (in case of a draw)
+                player_best_bid = random.choice(players_best_bid)
 
                 # Update possessions
                 in_poss[player_best_bid].append(i)
@@ -48,34 +53,44 @@ def do_transactions(N, D, book, action_book, in_poss, owners, credits):
                 owners[i] = player_best_bid
 
                 # Update book
-                book.seller[i] = np.nan
-        
+                book.loc[i, 'seller'] = np.nan
+                book.loc[i, 'price'] = np.nan
                 # Update credits
                 # If old_owner is not gov, than give it credits
                 if old_owner != N:
                     credits[old_owner] += best_bid
                 credits[player_best_bid] -= best_bid
-        
+
+                # Update last transactions
+                last_trans[i] = best_bid
+
         # Ask
-        # If permit owner wants to sell it
+        # If permit owner is not gov
         owner = owners[i]
-        asks = action_book.iloc[i][1:]
-        if asks[owner] < 0:
-            book.price[i] = np.abs(asks[owner])
-            book.seller[i] = owner
-    
-    return in_poss, book
+        if owner != N:
+            # If permit owner wants to sell it
+            asks = action_book.iloc[i][1:]
+            if asks[owner] < 0:
+                book.loc[i, 'price'] = np.abs(asks[owner])
+                book.loc[i, 'seller'] = owner
+
+    return last_trans
 
 # Evaluate reward
 def reward_eval(state):
     return 0
 
 # Reset book
-def reset_book(N, permits, gov_price):
+def reset_book(N, permits, in_poss, gov_price):
     book_df = pd.DataFrame(columns = ['permit', 'seller', 'price'])
     book_df['permit'] = permits
     book_df['seller'] = N
     book_df['price'] = gov_price
+
+    # Remove players initial points from book
+    for i in range(len(in_poss)):
+        book_df.loc[in_poss[i][0], 'seller'] = np.nan
+        book_df.loc[in_poss[i][0], 'price'] = np.nan 
     return book_df
 
 # Reset action book
@@ -92,16 +107,23 @@ def reset_missions(N, permits):
     missions = [[initial_points[i], final_points[i]] for i in range(N)]
     return missions
 
+# Reset in_poss
+def reset_in_poss_owners(N, D, missions):
+    in_poss = []
+    owners = [N for i in range(D**2)]
+    for i in range(len(missions)):
+        in_poss.append([tuple_to_number(D, missions[i][0])])
+        owners[tuple_to_number(D, missions[i][0])] = i
+    return in_poss, owners
+
 # Reset state state
-def reset_state(N, D, mission, gov_price):
-    state = {
-        'mission': (tuple_to_number(D, mission[0]), tuple_to_number(D, mission[1])), 
-        'book': {
-            'seller': [N + 1 for i in range(D**2)], 
-            'price': [[gov_price for i in range(D**2)]]
-            }, 
-        'in_poss': [0 for i in range(D**2)], 
-        'timestamp': 0
+def update_state(book, last_trans, in_poss, credit, t):
+    state = { 
+        'book_prices': [book.price.tolist()], 
+        'in_poss': [in_poss], 
+        'credit': [credit],
+        'last_trans': [last_trans],
+        'timestamp': t
         }
     return state
 
@@ -131,12 +153,12 @@ class TPSimEnv(gym.Env):
         self.action_space = Box(low = -1000, high = 1000, shape = (1, self.D**2))
         # State is a dictionary of other space tipes 
         self.observation_space = Dict({
-            'mission': Tuple((Discrete(self.D**2), Discrete(self.D**2))), 
-            'book': Dict({
-                'seller': MultiDiscrete([self.N + 2 for i in range(self.D**2)]), 
-                'price': Box(low = 0, high = 1000, shape = (1, self.D**2))}), 
-            'in_poss': MultiBinary(self.D**2), 
-            'timestamp': Discrete(self.T)})
+            'book_prices': Box(low = 0, high = 1000, shape = (1, self.D**2)), 
+            'in_poss': MultiBinary(self.D**2),
+            'credit': Box(low = -100000, high = 100000, shape = (1,1)),
+            'last_trans':  Box(low = 0, high = 1000, shape = (1, self.D**2)),
+            'timestamp': Discrete(self.T)
+            })
 
         # Set auxiliary variables
         # Permits vector
@@ -145,32 +167,36 @@ class TPSimEnv(gym.Env):
             for j in range(0, D):
                 self.permits.append((i, j))
 
-        # Set in_poss
-        self.in_poss = [[] for i in range(self.N)]
-        # Set owners
-        self.owners = [self.N for i in range(self.D**2)]
         # Set credits
         self.credits = [0 for i in range(self.N)]
         # Sort random missions for all players
         self.missions = reset_missions(self.N, self.permits)
+        # Set in_poss and owners
+        self.in_poss, self.owners = reset_in_poss_owners(self.N, self.D, self.missions)
         # Start book
-        self.book = reset_book(self.N, self.permits, self.gov_price)
+        self.book = reset_book(self.N, self.permits, self.in_poss, self.gov_price)
+        # Start last transactions
+        self.last_trans = [0 for i in range(self.D**2)]
         # Start action book (empty)
         self.action_book = reset_action_book(self.N, self.permits)
-        self.state = reset_state(self.N, self.D, self.missions[0], self.gov_price)
+        self.state = update_state(self.book, self.last_trans, self.in_poss[0], self.credits[0], 0)
 
 
     def step(self, action):
         # Update action_book witg naive actions 
         for i in range(1, self.N):
-            self.action_book[f'n{i}'] = tp_sim.envs.naive.take_action_naive(self.missions[i], self.book['permit'], self.in_poss[i], self.mu_b[i-1], self.mu_a[i-1], self.D)[0]
+            #self.action_book[f'n{i}'] = tp_sim.envs.naive.take_action_naive(self.missions[i], self.book['permit'], self.in_poss[i], self.mu_b[i-1], self.mu_a[i-1], self.D)
+            self.action_book[f'n{i}'] = tp_sim.envs.naive.Naive.random_action(self.D, -10, 10)
         
         # Update action_book with agent action
         self.action_book[f'agent'] = action[0]
         
-        # Do transactions and evaluate next state 
-        self.in_poss, self.book = do_transactions(self.N, self.D, self.book, self.action_book, self.in_poss, self.owners, self.credits)
+        # Do transactions 
+        self.last_trans = do_transactions(self.N, self.D, self.book, self.action_book, self.in_poss, self.owners, self.credits)
         
+        # Update state
+        self.state = update_state(self.book, self.last_trans, self.in_poss[0], self.credits[0], self.t + 1)
+
         # Increase timestamp by 1
         self.t += 1
 
@@ -198,19 +224,19 @@ class TPSimEnv(gym.Env):
         #
         # Reset step time
         self.t = self.T
-        # Reset in_poss
-        self.in_poss = [[] for i in range(self.N)]
-        # Reset owners
-        self.owners = [self.N for i in range(self.D**2)]
         # Set credits
         self.credits = [0 for i in range(self.N)]
         # Sort random missions for all players
         self.missions = reset_missions(self.N, self.permits)
+        # Reset in_poss and owners
+        self.in_poss, self.owners = reset_in_poss_owners(self.N, self.D, self.missions)
         # Reset book
-        self.book = reset_book(self.N, self.permits, self.gov_price)
+        self.book = reset_book(self.N, self.permits, self.in_poss, self.gov_price)
+        # Reset last transactions
+        self.last_trans = [0 for i in range(self.D**2)]
         # Reset action book
         self.action_book = reset_action_book(self.N, self.permits)
-        self.state = reset_state(self.N, self.D, self.missions[0], self.gov_price)
+        self.state = update_state(self.book, self.last_trans, self.in_poss[0], self.credits[0], 0)
 
         return self.state
     

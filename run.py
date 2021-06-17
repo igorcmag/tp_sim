@@ -5,21 +5,23 @@ import agents.agent
 
 # Simulation parameters
 # Total number of players
-N = 10
+N = 5
 # Space dimension
-D = 10
+D = 5
 # Number of timesteps
 T = 10
 # Vector of naive agents bids 
-mu_b = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+mu_b = [i+1 for i in range(N-1)]
 # Vector of naive agents asks
-mu_a = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+mu_a = [i+1 for i in range(N-1)]
 # Standard deviation in naive agents noise bids and asks
 sigma = 0
 # Government price
 gov_price = 2
 
 env = gym.make('tp_sim-v0', N = N, D = D, T = T, mu_b = mu_b, mu_a = mu_a, sigma = sigma, gov_price = gov_price)
+agent = agents.agent.TPSimAgent(D = D, T = T, mission = env.missions[0])
+print(agent.mission)
 
 # Run experiment
 #episodes = T
@@ -48,9 +50,25 @@ print('owners')
 print(env.owners)
 print('credits')
 print(env.credits)
+print('last transactions')
+print(env.last_trans)
+
+action = agent.take_action(state)
+print(" ############### AGENT INFO ##############")
+print('book_prices')
+print(agent.book_prices)
+print('in_poss')
+print(agent.in_poss)
+print('credits')
+print(agent.credit)
+print('last transactions')
+print(agent.last_trans)
+
 
 print(" ############### FIRST STEP ##############")
-action = agents.agent.take_action(env)
+action = agent.take_action(state)
+
+print(" ############### ENV INFO ##############")
 state, reward, done, info = env.step(action)
 print('action_book')
 print(env.action_book)
@@ -62,6 +80,20 @@ print('owners')
 print(env.owners)
 print('credits')
 print(env.credits)
+print('last transactions')
+print(env.last_trans)
+
+action = agent.take_action(state)
+
+print(" ############### AGENT INFO ##############")
+print('book_prices')
+print(agent.book_prices)
+print('in_poss')
+print(agent.in_poss)
+print('credits')
+print(agent.credit)
+print('last transactions')
+print(agent.last_trans)
 
 #print(info)
 #action = agents.agent.take_action(state)
